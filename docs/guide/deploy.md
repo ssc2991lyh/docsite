@@ -2,64 +2,129 @@
 
 ## 它现在怎么跑的
 
-**不是** nginx 挂静态文件，而是一个 **systemd 常驻的 dev server**，监听 `0.0.0.0:5173`：
+**不是** nginx 挂静态文件，而是一个 **systemd 常驻的 preview server**，监听 `0.0.0.0:5173`：
 
 ```
 http://192.168.10.107:5173
 ```
 
-这样做的原因：改完 `.md` 保存，浏览器立刻刷新，**不用手动 build**。适合天天写东西的场景。
+对外通过 frp + nginx 暴露成 **<https://docs.20100205.xyz>**。
 
-代价是它按开发模式跑（内存约 175MB），并且 `sitemap.xml` 之类只在 build 时才生成。
+两个 systemd 单元配合：
+
+| 单元 | 作用 |
+| --- | --- |
+| `my-docs.service` | `ExecStartPre` 先构建，再跑 `vitepress preview`（端口 5173） |
+| `docs-sync.timer` | 每 5 分钟检查 GitHub 有没有新提交，有就拉取 + 重启发布 |
+
+两个都 `enabled`，开机自启。
+
+## 内容怎么更新
+
+### 方式一：在 GitHub 网页上改（推荐）
+
+点页面底部的「在 GitHub 上编辑此页」，改完 commit 即可。**5 分钟内**自动同步到线上，不用做任何事。
+
+想立刻生效就手动催一下：
+
+```bash
+sudo systemctl start docs-sync.service
+journalctl -u docs-sync -n 20      # 看它干了什么
+```
+
+### 方式二：在 107 上直接改
+
+```bash
+cd ~/my-docs
+vim docs/notes/某篇.md
+git add -A && git commit -m "更新 xx"
+sudo systemctl restart my-docs      # 重启时才构建
+```
+
+注意 107 上**没有配 GitHub 推送凭据**，所以 commit 只留在本地，推不上去。要推得用 `scripts/push_via_api.py`（走 API，绕过 git 协议）。
+
+### 方式三：在本地改再同步
+
+```bash
+bash scripts/sync_docs.sh     # 在 Agent_Desktop 里跑：pull + 重启发布
+```
+
+## 自动同步是怎么做到的
+
+`~/docs-sync.sh` 每 5 分钟跑一次，逻辑很短：
+
+```bash
+git fetch origin            # 走代理
+若 HEAD != origin/main:
+    git merge --ff-only origin/main
+    sudo -n systemctl restart my-docs     # restart 的 ExecStartPre 会构建
+    轮询探测 200，确认发布成功
+```
+
+几个关键设计：
+
+::: tip 为什么必须 restart，不能只 build
+`vitepress preview` 底层是 `sirv`，它**启动时就把 dist 目录索引缓存住了**。新增或删除页面后，光重新构建没用——文件在磁盘上是对的，但 server 的索引里没有，访问直接 404。必须重启才认新文件。
+
+（这一点 2026-10-27 实测确认过：build 后新页面 404，restart 后立刻 200。）
+:::
+
+::: tip 为什么只 restart 不单独 build
+`my-docs.service` 的 `ExecStartPre` 已经包了构建，所以 restart 一次就是「构建 + 发布」。如果脚本里自己再 build 一遍，等于白跑一次 11 秒。
+:::
+
+::: tip sudo 只开了一个口子
+`/etc/sudoers.d/docs-sync` 里只有一条：
+
+```
+mulq ALL=(root) NOPASSWD: /usr/bin/systemctl restart my-docs
+```
+
+只允许免密重启这一个服务，不是 `NOPASSWD: ALL`。改之前务必 `visudo -c` 校验，语法错了 sudo 会整个失效。
+:::
+
+### GitHub 访问靠内网代理
+
+`github.com:443` 在 107 上直连不通，仓库级已配：
+
+```bash
+git config http.proxy  http://192.168.10.110:65533
+git config https.proxy http://192.168.10.110:65533
+```
+
+代理在 `192.168.10.110:65533`（跑 MC 那台）。**注意不是 7890/7897 那些常规端口**，别猜错了。
+
+拉取只需要这个代理；**推送还需要凭据**（107 上没有 GitHub token），所以自动同步是**单向的**：GitHub → 107。
 
 ## 服务管理
 
-开机自启已经开好了（`enabled`），服务器重启会自动拉起。
-
 ```bash
-systemctl status my-docs      # 看状态
-sudo systemctl restart my-docs
-sudo systemctl stop my-docs
-sudo systemctl start my-docs
-journalctl -u my-docs -f      # 实时日志
-journalctl -u my-docs -n 50   # 最近 50 行
+systemctl status my-docs
+sudo systemctl restart my-docs      # 重新构建 + 发布
+journalctl -u my-docs -f            # 实时日志
+
+systemctl status docs-sync.timer
+sudo systemctl start docs-sync.service    # 立即同步一次
+journalctl -u docs-sync -n 50
 ```
 
-- unit 文件：`/etc/systemd/system/my-docs.service`
-- 源文件备份：`~/my-docs.service`（改完要 `sudo install -m 644 ~/my-docs.service /etc/systemd/system/ && sudo systemctl daemon-reload`）
-- 跑的身份：`mulq`，工作目录 `/home/mulq/my-docs`，直接调 `node_modules/vitepress/bin/vitepress.js`（绕开 npm，方便 systemd 管进程）
+unit 源文件备份在家目录：`~/my-docs.service`、`~/docs-sync.service`、`~/docs-sync.timer`、`~/docs-sync.sh`。
 
-::: tip 为什么不写 `npm run dev`
-systemd 的 PATH 很干净，而且 npm 只是中间层——它再 fork 一个 node。直接调 vitepress 的入口脚本，systemd 杀掉主进程就等于关掉整个服务，不会留孤儿进程。
-:::
-
-## 改了 config.ts 之后
-
-VitePress 会监听配置文件变化并自动重启 dev server，一般等几秒就好。没反应就手动来一下：
+改完 unit 要重装：
 
 ```bash
-sudo systemctl restart my-docs
+sudo install -m 644 ~/docs-sync.service /etc/systemd/system/
+sudo systemctl daemon-reload
 ```
-
-## 装了新依赖之后
-
-dev server 需要在启动时预构建依赖，装完必须重启：
-
-```bash
-npm i -D 某个包
-sudo systemctl restart my-docs
-```
-
-不重启的话会报 `Failed to resolve dependency` 或者页面白屏。
 
 ## 构建静态站（想换回静态托管时用）
 
 ```bash
 cd ~/my-docs
-npm run build      # 约 10 秒（装了 mermaid 后比裸站慢）
+npm run build      # 约 11 秒
 ```
 
-产物在 `docs/.vitepress/dist/`，**4.9M**。里面是纯 HTML/CSS/JS，扔到任何静态服务器都能跑。
+产物在 `docs/.vitepress/dist/`，**4.9M**。
 
 ::: warning cleanUrls 的坑
 配置开了 `cleanUrls: true`，网址是 `/guide/writing` 而不是 `/guide/writing.html`。用 nginx 托管必须加 `try_files`，否则二级页面全 404：
@@ -74,52 +139,44 @@ location / {
 
 ## git 与「最后更新于」
 
-`~/my-docs` 是个 git 仓库，**只为了让页面底部显示更新时间**（VitePress 读的是 git 提交时间）。
+页面底部的更新时间读的是 **git 提交时间**。所以：
 
-所以：改了内容想让时间更新，得提交一次。
-
-```bash
-cd ~/my-docs
-git add -A
-git commit -m "更新 xx 笔记"
-```
-
-不提交的话，页面底部显示的还是上一次提交的时间——内容其实已经是最新的，只是日期不动。介意的话就顺手 commit。
-
-::: tip 配置了 git 身份
-提交时用的是 `-c user.name=mulq -c user.email=mulq@192.168.10.107` 这种临时指定。想一劳永逸：
-
-```bash
-git config user.name mulq
-git config user.email mulq@192.168.10.107
-```
-:::
+- 在 GitHub 上改 → commit 时间自动更新 ✓
+- 在 107 上改但没 commit → 内容变了，日期不动
 
 ## 常见问题
+
+::: warning 改了内容但线上没变
+1. `journalctl -u docs-sync -n 20` 看有没有拉到
+2. 确认 GitHub 上的 commit 真的成功了
+3. 手动 `sudo systemctl start docs-sync.service`
+
+如果日志显示「拉取失败」，是代理挂了：`curl -x http://192.168.10.110:65533 -I https://github.com/`
+:::
+
+::: warning 新增页面 404，但文件明明在
+就是 sirv 的目录索引缓存。`sudo systemctl restart my-docs`。
+:::
 
 ::: warning 打不开 / 连接被拒
 ```bash
 systemctl status my-docs
 journalctl -u my-docs -n 50
+ss -tlnp | grep 5173
 ```
-端口被别的进程占了也会这样：`ss -tlnp | grep 5173`。
 :::
 
-::: warning 端口冲突了想换
-改 unit 里的 `--port 5173`，然后 `daemon-reload` + `restart`。注意 `config.ts` 里的 `sitemap.hostname` 也要跟着改。
-:::
-
-::: warning 用 curl 看页面是空的
-dev 模式返回的是 SPA 外壳，正文由浏览器里的 JS 渲染，所以 `curl` 抓不到内容（`<title>` 都是空的）。这是正常的，用浏览器打开就行。想看 SSR 出来的真实 HTML，用 `npm run build` 后的 `dist/`。
+::: warning 端口冲突想换
+改 unit 里的 `--port 5173`，`daemon-reload` + `restart`。`config.ts` 里的 `sitemap.hostname` 也要跟着改，frp 那边的映射更要改。
 :::
 
 ::: warning Mermaid 图不显示
-Mermaid 也是客户端渲染，必须等 JS 加载完。如果一直不显示，按 F12 看控制台有没有 mermaid 解析错误——多半是图表语法写错了（比如中文括号、箭头方向写反）。
+Mermaid 是客户端渲染，等 JS 加载完。一直不显示就看浏览器控制台——多半是图表语法错了。
 :::
 
 ## 备份
 
-`node_modules/` 不用备份，重装即可。只备源码和内容：
+`node_modules/` 不用备份。只备源码：
 
 ```bash
 mkdir -p ~/backup
@@ -129,3 +186,5 @@ tar -czf ~/backup/my-docs-$(date +%F).tar.gz -C ~ \
   --exclude=my-docs/docs/.vitepress/cache \
   my-docs
 ```
+
+内容同时也在 GitHub 上：<https://github.com/ssc2991lyh/docsite>
