@@ -15,7 +15,7 @@ http://192.168.10.107:5173
 | 单元 | 作用 |
 | --- | --- |
 | `my-docs.service` | `ExecStartPre` 先构建，再跑 `vitepress preview`（端口 5173） |
-| `docs-sync.timer` | 每 5 分钟检查 GitHub 有没有新提交，有就拉取 + 重启发布 |
+| `docs-sync.service` | 常驻轮询，每 15 秒查一次 GitHub，有更新就拉取 + 重建发布 |
 
 两个都 `enabled`，开机自启。
 
@@ -23,13 +23,12 @@ http://192.168.10.107:5173
 
 ### 方式一：在 GitHub 网页上改（推荐）
 
-点页面底部的「在 GitHub 上编辑此页」，改完 commit 即可。**5 分钟内**自动同步到线上，不用做任何事。
+点页面底部的「在 GitHub 上编辑此页」，改完 commit 即可。**15 秒内**自动同步到线上，什么都不用做。
 
-想立刻生效就手动催一下：
+它检测到更新后会自动 pull → 重启 → 构建 → 探测 200，大约 10-15 秒完成。想看过程：
 
 ```bash
-sudo systemctl start docs-sync.service
-journalctl -u docs-sync -n 20      # 看它干了什么
+journalctl -u docs-sync -f
 ```
 
 ### 方式二：在 107 上直接改
@@ -51,15 +50,22 @@ bash scripts/sync_docs.sh     # 在 Agent_Desktop 里跑：pull + 重启发布
 
 ## 自动同步是怎么做到的
 
-`~/docs-sync.sh` 每 5 分钟跑一次，逻辑很短：
+`docs-sync.service` 是个常驻脚本（`~/docs-sync.sh`），循环体就这么点：
 
 ```bash
-git fetch origin            # 走代理
-若 HEAD != origin/main:
-    git merge --ff-only origin/main
-    sudo -n systemctl restart my-docs     # restart 的 ExecStartPre 会构建
-    轮询探测 200，确认发布成功
+while true; do
+    # 只取远程 ref 的 SHA，不下载对象，一次几 KB
+    若 HEAD != origin/main:
+        git merge --ff-only origin/main
+        sudo -n systemctl restart my-docs   # restart 的 ExecStartPre 会构建
+        探测 200 确认发布
+    sleep 15
+done
 ```
+
+无更新时**完全静默**，不写日志——不会像「每 15 秒起一个 systemd 单元」那样把 journal 刷成一片 Starting/Finished。
+
+用 `git ls-remote` 而不是 `git fetch` 是有意的：前者只拿一个 ref（几 KB），后者要收整个 packfile。15 秒一轮的话这个差别很关键。
 
 几个关键设计：
 
@@ -103,12 +109,12 @@ systemctl status my-docs
 sudo systemctl restart my-docs      # 重新构建 + 发布
 journalctl -u my-docs -f            # 实时日志
 
-systemctl status docs-sync.timer
-sudo systemctl start docs-sync.service    # 立即同步一次
-journalctl -u docs-sync -n 50
+systemctl status docs-sync
+sudo systemctl restart docs-sync    # 重启轮询循环
+journalctl -u docs-sync -f          # 有同步动作时才有输出
 ```
 
-unit 源文件备份在家目录：`~/my-docs.service`、`~/docs-sync.service`、`~/docs-sync.timer`、`~/docs-sync.sh`。
+unit 源文件备份在家目录：`~/my-docs.service`、`~/docs-sync.service`、`~/docs-sync.sh`。
 
 改完 unit 要重装：
 
@@ -149,9 +155,9 @@ location / {
 ::: warning 改了内容但线上没变
 1. `journalctl -u docs-sync -n 20` 看有没有拉到
 2. 确认 GitHub 上的 commit 真的成功了
-3. 手动 `sudo systemctl start docs-sync.service`
+3. `sudo systemctl restart docs-sync` 重启轮询循环
 
-如果日志显示「拉取失败」，是代理挂了：`curl -x http://192.168.10.110:65533 -I https://github.com/`
+如果日志里反复出现「拉取或合并失败」，是代理挂了：`curl -x http://192.168.10.110:65533 -I https://github.com/`
 :::
 
 ::: warning 新增页面 404，但文件明明在
