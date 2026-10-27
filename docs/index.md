@@ -39,13 +39,15 @@ features:
 
 ## 这个站现在能用了吗
 
-能。配置已经写好了，`docs/` 下新增 `.md` 文件就会自动变成一个页面。
+能。服务已经在 `http://192.168.10.107:5173` 常驻跑着（systemd 托管，开机自启），`docs/` 下新增 `.md` 文件就会自动变成一个页面。
+
+改完保存，浏览器自己刷新，不用 build：
 
 ```bash
 cd ~/my-docs
-npm run dev     # 本地写着看，热更新
-npm run build   # 出静态文件到 docs/.vitepress/dist
-npm run preview # 预览构建结果
+npm run dev     # 平时不用手动跑，服务已经在 5173 常驻
+npm run build   # 想导出静态文件时用，产物在 docs/.vitepress/dist
 ```
 
 想加新页面，两个动作：**建文件 + 登记侧边栏**（在 `docs/.vitepress/config.ts` 的 `sidebar` 里加一行）。
+

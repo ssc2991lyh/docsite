@@ -8,6 +8,7 @@
 ~/my-docs/
 ├── package.json           # 依赖和 npm 命令
 ├── node_modules/
+├── .git/                  # 只为「最后更新于」服务
 └── docs/
     ├── index.md           # 首页（layout: home）
     ├── public/            # 静态资源，原样复制到站点根目录
@@ -16,11 +17,15 @@
     ├── guide/             # 「指南」分区
     │   ├── index.md       #   → /guide/
     │   ├── writing.md     #   → /guide/writing
+    │   ├── diagrams.md    #   → /guide/diagrams
     │   └── deploy.md      #   → /guide/deploy
     ├── notes/             # 「笔记」分区
     │   └── index.md
     └── .vitepress/
         ├── config.ts      # 全站配置（导航、侧边栏、搜索、页脚…）
+        ├── theme/
+        │   └── index.ts   # 自定义主题（图片点击放大在这挂）
+        ├── cache/         # dev 缓存，可安全删除
         └── dist/          # build 产物，别手动改
 ```
 
@@ -28,11 +33,13 @@
 
 | 命令 | 干什么 | 什么时候用 |
 | --- | --- | --- |
-| `npm run dev` | 启动开发服务器（含热更新） | 平时写东西 |
-| `npm run build` | 构建静态文件到 `docs/.vitepress/dist` | 要部署上线时 |
-| `npm run preview` | 预览 build 出来的结果 | 上线前最后确认 |
+| `npm run dev` | 启动开发服务器（含热更新） | **已经在跑了**，改 unit 或本地调试时才手动 |
+| `npm run build` | 构建静态文件到 `docs/.vitepress/dist` | 想导出静态站给别人时 |
+| `npm run preview` | 预览 build 出来的结果（4173） | 上线前最后确认 |
 
-`dev` 和 `preview` 都监听了 `0.0.0.0`，同局域网的设备能直接打开，方便手机上看效果。
+服务由 systemd 托管，常驻在 **`http://192.168.10.107:5173`**，开机自启、崩了自动拉起。同局域网的手机、平板直接打开就能看。
+
+日常只管写 `.md` 然后保存，热更新会自己把页面刷出来。服务怎么管、怎么改端口，见[部署与维护](/guide/deploy)。
 
 ## 加一个新页面
 

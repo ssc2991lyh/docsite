@@ -1,28 +1,68 @@
 # 部署与维护
 
-## 日常写作流程
+## 它现在怎么跑的
+
+**不是** nginx 挂静态文件，而是一个 **systemd 常驻的 dev server**，监听 `0.0.0.0:5173`：
+
+```
+http://192.168.10.107:5173
+```
+
+这样做的原因：改完 `.md` 保存，浏览器立刻刷新，**不用手动 build**。适合天天写东西的场景。
+
+代价是它按开发模式跑（内存约 175MB），并且 `sitemap.xml` 之类只在 build 时才生成。
+
+## 服务管理
+
+开机自启已经开好了（`enabled`），服务器重启会自动拉起。
+
+```bash
+systemctl status my-docs      # 看状态
+sudo systemctl restart my-docs
+sudo systemctl stop my-docs
+sudo systemctl start my-docs
+journalctl -u my-docs -f      # 实时日志
+journalctl -u my-docs -n 50   # 最近 50 行
+```
+
+- unit 文件：`/etc/systemd/system/my-docs.service`
+- 源文件备份：`~/my-docs.service`（改完要 `sudo install -m 644 ~/my-docs.service /etc/systemd/system/ && sudo systemctl daemon-reload`）
+- 跑的身份：`mulq`，工作目录 `/home/mulq/my-docs`，直接调 `node_modules/vitepress/bin/vitepress.js`（绕开 npm，方便 systemd 管进程）
+
+::: tip 为什么不写 `npm run dev`
+systemd 的 PATH 很干净，而且 npm 只是中间层——它再 fork 一个 node。直接调 vitepress 的入口脚本，systemd 杀掉主进程就等于关掉整个服务，不会留孤儿进程。
+:::
+
+## 改了 config.ts 之后
+
+VitePress 会监听配置文件变化并自动重启 dev server，一般等几秒就好。没反应就手动来一下：
+
+```bash
+sudo systemctl restart my-docs
+```
+
+## 装了新依赖之后
+
+dev server 需要在启动时预构建依赖，装完必须重启：
+
+```bash
+npm i -D 某个包
+sudo systemctl restart my-docs
+```
+
+不重启的话会报 `Failed to resolve dependency` 或者页面白屏。
+
+## 构建静态站（想换回静态托管时用）
 
 ```bash
 cd ~/my-docs
-npm run dev
+npm run build      # 约 10 秒（装了 mermaid 后比裸站慢）
 ```
 
-终端会打印一个 `http://localhost:5173/` 的地址。因为监听的是 `0.0.0.0`，同局域网的其他设备（手机、另一台电脑）用 `http://192.168.10.107:5173/` 也能打开，方便看手机端效果。
+产物在 `docs/.vitepress/dist/`，**4.9M**。里面是纯 HTML/CSS/JS，扔到任何静态服务器都能跑。
 
-改 `docs/` 下的文件保存，浏览器自动刷新，不用重启。
-
-写完按 `Ctrl+C` 停掉。
-
-## 构建上线
-
-```bash
-cd ~/my-docs
-npm run build
-```
-
-产物在 `docs/.vitepress/dist/`，就是纯静态 HTML/CSS/JS，没有任何后端依赖。
-
-**注意**：配置里开了 `cleanUrls: true`，意思是 `/guide/writing.html` 会以 `/guide/writing` 的形式对外。所以用 nginx 托管时要加 `try_files`，否则二级页面会 404：
+::: warning cleanUrls 的坑
+配置开了 `cleanUrls: true`，网址是 `/guide/writing` 而不是 `/guide/writing.html`。用 nginx 托管必须加 `try_files`，否则二级页面全 404：
 
 ```nginx
 location / {
@@ -30,41 +70,62 @@ location / {
     try_files $uri $uri.html $uri/ =404;
 }
 ```
+:::
 
-不想折腾 nginx 也行，直接用 VitePress 自带的预览服务器：
+## git 与「最后更新于」
+
+`~/my-docs` 是个 git 仓库，**只为了让页面底部显示更新时间**（VitePress 读的是 git 提交时间）。
+
+所以：改了内容想让时间更新，得提交一次。
 
 ```bash
-npm run preview   # 默认 http://0.0.0.0:4173
+cd ~/my-docs
+git add -A
+git commit -m "更新 xx 笔记"
 ```
 
-## 依赖与升级
+不提交的话，页面底部显示的还是上一次提交的时间——内容其实已经是最新的，只是日期不动。介意的话就顺手 commit。
+
+::: tip 配置了 git 身份
+提交时用的是 `-c user.name=mulq -c user.email=mulq@192.168.10.107` 这种临时指定。想一劳永逸：
 
 ```bash
-npm outdated              # 看哪些包有新版本
-npm install vitepress@latest vue@latest
-npm run build             # 升完一定重新构建验证
+git config user.name mulq
+git config user.email mulq@192.168.10.107
 ```
-
-npm 源已经指向中科大镜像（`npmreg.proxy.ustclug.org`），国内拉包不慢。
+:::
 
 ## 常见问题
 
-::: warning 页面 404
-大概率是 `cleanUrls` 和 nginx 的 `try_files` 没对上。要么加 `try_files`，要么把 `config.ts` 里的 `cleanUrls` 改成 `false`。
+::: warning 打不开 / 连接被拒
+```bash
+systemctl status my-docs
+journalctl -u my-docs -n 50
+```
+端口被别的进程占了也会这样：`ss -tlnp | grep 5173`。
 :::
 
-::: warning 搜不到中文内容
-本地搜索的索引是**构建时**生成的。`npm run dev` 下搜索的是实时内容；但如果线上搜不到新写的词，说明没重新 `build`。
+::: warning 端口冲突了想换
+改 unit 里的 `--port 5173`，然后 `daemon-reload` + `restart`。注意 `config.ts` 里的 `sitemap.hostname` 也要跟着改。
 :::
 
-::: warning 侧边栏没有新页面
-新加的 `.md` 不会自动进侧边栏，得手动在 `config.ts` 的 `sidebar` 里登记（见[快速开始](/guide/#加一个新页面)）。
+::: warning 用 curl 看页面是空的
+dev 模式返回的是 SPA 外壳，正文由浏览器里的 JS 渲染，所以 `curl` 抓不到内容（`<title>` 都是空的）。这是正常的，用浏览器打开就行。想看 SSR 出来的真实 HTML，用 `npm run build` 后的 `dist/`。
+:::
+
+::: warning Mermaid 图不显示
+Mermaid 也是客户端渲染，必须等 JS 加载完。如果一直不显示，按 F12 看控制台有没有 mermaid 解析错误——多半是图表语法写错了（比如中文括号、箭头方向写反）。
 :::
 
 ## 备份
 
-站点内容全在 `docs/` 里，`node_modules/` 不用备份（重装即可）。最简单的备份：
+`node_modules/` 不用备份，重装即可。只备源码和内容：
 
 ```bash
-tar -czf ~/backup/my-docs-$(date +%F).tar.gz -C ~ my-docs --exclude=node_modules --exclude=.vitepress/dist --exclude=.vitepress/cache
+mkdir -p ~/backup
+tar -czf ~/backup/my-docs-$(date +%F).tar.gz -C ~ \
+  --exclude=my-docs/node_modules \
+  --exclude=my-docs/docs/.vitepress/dist \
+  --exclude=my-docs/docs/.vitepress/cache \
+  my-docs
 ```
