@@ -33,6 +33,14 @@ export default withMermaid(
     // 静态站点地图（有正式域名后把 hostname 换掉）
     sitemap: { hostname: 'http://192.168.10.107:5173' },
 
+    // ---------- Vite ----------
+    vite: {
+      // mermaid 单个 chunk 就有 1MB+，把告警阈值调高免得刷屏
+      build: { chunkSizeWarningLimit: 1600 },
+      // 允许任意 Host 访问 dev server（以后用 frp 域名反代时 Vite 默认会拦）
+      server: { allowedHosts: true }
+    },
+
     // ---------- 主题 ----------
     themeConfig: {
       logo: '/logo.svg',
