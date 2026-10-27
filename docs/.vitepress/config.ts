@@ -105,6 +105,13 @@ export default withMermaid(
         formatOptions: { dateStyle: 'short', timeStyle: 'short' }
       },
 
+      // 「在 GitHub 上编辑此页」按钮
+      // ⚠️ 仓库推上 GitHub 之前，这个链接点了会 404
+      editLink: {
+        pattern: 'https://github.com/ssc2991lyh/my-docs/edit/main/docs/:path',
+        text: '在 GitHub 上编辑此页'
+      },
+
       // 界面文案汉化
       darkModeSwitchLabel: '外观',
       lightModeSwitchTitle: '切换到浅色模式',
